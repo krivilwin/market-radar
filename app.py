@@ -166,84 +166,124 @@ with tab1:
         st.session_state.scan_errors = {}
 
     if symbols:
-        total_batches = int(np.ceil(len(symbols)/MAX_SCAN))
-        if st.session_state.scan_offset >= len(symbols):
-            st.session_state.scan_offset = 0
-        batch_no = st.session_state.scan_offset // MAX_SCAN + 1
-        batch = symbols[st.session_state.scan_offset:st.session_state.scan_offset+MAX_SCAN]
-        batch_done = all(symbol in st.session_state.scan_results for symbol in batch)
-        scanned_count = sum(symbol in st.session_state.scan_results for symbol in symbols)
+        total_batches = int(np.ceil(len(symbols) / MAX_SCAN))
 
-        st.info(f"Free-plan protection: max {MAX_SCAN} tickers per scan. Batch {batch_no} of {total_batches}. Cached for 6 hours.")
-        st.caption(f"Current batch: {', '.join(batch)}")
+        # Never move backwards automatically. Offset points to the next batch to scan.
+        st.session_state.scan_offset = max(
+            0, min(st.session_state.scan_offset, max(0, len(symbols) - 1))
+        )
 
-        c1,c2 = st.columns(2)
-        run_scan = c1.button("Run current batch", type="primary")
-        next_label = f"Continue to Batch {batch_no + 1}" if batch_no < total_batches else "Back to Batch 1"
-        next_batch = c2.button(next_label)
+        scanned_count = sum(s in st.session_state.scan_results for s in symbols)
 
-        if next_batch:
-            if batch_no < total_batches:
-                st.session_state.scan_offset += MAX_SCAN
-            else:
+        if scanned_count >= len(symbols):
+            st.success(f"✅ Scan complete — {scanned_count}/{len(symbols)} tickers scanned.")
+            if st.button("Start new scan"):
                 st.session_state.scan_offset = 0
-            st.rerun()
-
-        if run_scan:
-            st.write("Scanning: **" + ", ".join(batch) + "**")
-            errors = []
-            bar = st.progress(0)
-            for i,symbol in enumerate(batch):
-                df,err = history(symbol)
-                if df is not None and len(df) >= 60:
-                    a = score_symbol(df, mode)
-                    st.session_state.scan_results[symbol] = {
-                        "Symbol":symbol,"Score":a["score"],"Signal":a["signal"],
-                        "Price":round(a["price"],2),"RSI":round(a["rsi"],1),
-                        "Entry low":round(a["entry_low"],2),"Entry high":round(a["entry_high"],2),
-                        "Target":round(a["target"],2),"Stop":round(a["stop"],2),
-                        "R/R":round(a["rr"],2)
-                    }
-                    st.session_state.scan_errors.pop(symbol, None)
-                elif err:
-                    errors.append(f"{symbol}: {err}")
-                    st.session_state.scan_errors[symbol] = err
-                bar.progress((i+1)/max(1,len(batch)))
-            batch_done = all(symbol in st.session_state.scan_results for symbol in batch)
-            scanned_count = sum(symbol in st.session_state.scan_results for symbol in symbols)
-
-        current_rows = [st.session_state.scan_results[s] for s in batch if s in st.session_state.scan_results]
-        if current_rows:
-            st.markdown(f"### Batch {batch_no} results")
-            current_out = pd.DataFrame(current_rows).sort_values(["Score","R/R"], ascending=False)
-            st.dataframe(current_out, use_container_width=True, hide_index=True)
-            good = current_out[current_out.Score >= 75]
-            if good.empty:
-                st.warning("No high-quality setups found in this batch. Waiting is a valid signal.")
-            else:
-                st.success(f"{len(good)} potential setup(s) scored 75 or higher in this batch.")
-
-        if batch_done:
-            if batch_no < total_batches:
-                st.success(f"✅ Batch {batch_no} scanned. {scanned_count}/{len(symbols)} tickers saved. Continue to Batch {batch_no + 1} when ready.")
-            else:
-                st.success(f"✅ Final batch scanned. {scanned_count}/{len(symbols)} tickers saved.")
+                st.session_state.scan_results = {}
+                st.session_state.scan_errors = {}
+                st.rerun()
         else:
-            st.caption(f"👉 Batch {batch_no} ready — press Run current batch.")
+            # Find the first not-yet-scanned ticker and start its batch there.
+            remaining_indices = [
+                i for i, s in enumerate(symbols)
+                if s not in st.session_state.scan_results
+            ]
+            if remaining_indices:
+                st.session_state.scan_offset = (remaining_indices[0] // MAX_SCAN) * MAX_SCAN
 
-        all_rows = [st.session_state.scan_results[s] for s in symbols if s in st.session_state.scan_results]
+            batch_no = st.session_state.scan_offset // MAX_SCAN + 1
+            batch = symbols[
+                st.session_state.scan_offset:
+                st.session_state.scan_offset + MAX_SCAN
+            ]
+
+            st.info(
+                f"Free-plan protection: max {MAX_SCAN} tickers per scan. "
+                f"Next: Batch {batch_no} of {total_batches}. Cached for 6 hours."
+            )
+            st.caption(f"Next batch: {', '.join(batch)}")
+            st.caption(f"Progress: {scanned_count}/{len(symbols)} scanned")
+
+            button_label = (
+                "Scan first batch" if scanned_count == 0
+                else f"Scan next batch ({batch_no}/{total_batches})"
+            )
+
+            if st.button(button_label, type="primary"):
+                st.write("Scanning: **" + ", ".join(batch) + "**")
+                bar = st.progress(0)
+                successful = 0
+
+                for i, symbol in enumerate(batch):
+                    df, err = history(symbol)
+                    if df is not None and len(df) >= 60:
+                        a = score_symbol(df, mode)
+                        st.session_state.scan_results[symbol] = {
+                            "Symbol": symbol,
+                            "Score": a["score"],
+                            "Signal": a["signal"],
+                            "Price": round(a["price"], 2),
+                            "RSI": round(a["rsi"], 1),
+                            "Entry low": round(a["entry_low"], 2),
+                            "Entry high": round(a["entry_high"], 2),
+                            "Target": round(a["target"], 2),
+                            "Stop": round(a["stop"], 2),
+                            "R/R": round(a["rr"], 2),
+                        }
+                        st.session_state.scan_errors.pop(symbol, None)
+                        successful += 1
+                    else:
+                        msg = err or "Not enough market history returned."
+                        st.session_state.scan_errors[symbol] = msg
+                    bar.progress((i + 1) / max(1, len(batch)))
+
+                # Advance only when every ticker in this batch succeeded.
+                batch_done = all(
+                    s in st.session_state.scan_results for s in batch
+                )
+                if batch_done:
+                    next_offset = st.session_state.scan_offset + MAX_SCAN
+                    st.session_state.scan_offset = min(
+                        next_offset, max(0, len(symbols) - 1)
+                    )
+                    st.session_state.scan_errors = {
+                        k: v for k, v in st.session_state.scan_errors.items()
+                        if k not in batch
+                    }
+                    st.rerun()
+                else:
+                    st.warning(
+                        f"{successful}/{len(batch)} tickers completed. "
+                        "The batch was not advanced so failed tickers can be retried."
+                    )
+
+        all_rows = [
+            st.session_state.scan_results[s]
+            for s in symbols
+            if s in st.session_state.scan_results
+        ]
+
         if all_rows:
             st.divider()
-            st.markdown(f"## 🏆 Overall ranking — {len(all_rows)}/{len(symbols)} scanned")
-            overall = pd.DataFrame(all_rows).sort_values(["Score","R/R"], ascending=False)
+            st.markdown(
+                f"## 🏆 Overall ranking — {len(all_rows)}/{len(symbols)} scanned"
+            )
+            overall = pd.DataFrame(all_rows).sort_values(
+                ["Score", "R/R"], ascending=False
+            )
             st.dataframe(overall, use_container_width=True, hide_index=True)
             top = overall[overall.Score >= 75]
             if not top.empty:
-                st.success(f"{len(top)} setup(s) currently score 75 or higher across all scanned batches.")
+                st.success(
+                    f"{len(top)} setup(s) currently score 75 or higher "
+                    "across all scanned batches."
+                )
 
         if st.session_state.scan_errors:
             first_symbol = next(iter(st.session_state.scan_errors))
-            st.warning(f"{first_symbol}: {st.session_state.scan_errors[first_symbol]}")
+            st.warning(
+                f"{first_symbol}: {st.session_state.scan_errors[first_symbol]}"
+            )
     else:
         st.warning("Add at least one ticker.")
 
