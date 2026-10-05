@@ -18,7 +18,7 @@ MAX_SCAN = 6
 
 MY_PORTFOLIO = [
     {"symbol": "ASYS", "shares": 5.8, "avg_price": 14.88, "currency": "USD"},
-    {"symbol": "VWRP", "shares": 0.47846889, "avg_price": 146.30, "currency": "GBP"},
+    {"symbol": "VWRP", "data_symbol": "VWRP:LSE", "shares": 0.47846889, "avg_price": 146.30, "currency": "GBP"},
 ]
 
 def api_key():
@@ -322,7 +322,7 @@ with tab3:
 
     rows = []
     for pos in MY_PORTFOLIO:
-        df, err = history(pos["symbol"])
+        df, err = history(pos.get("data_symbol", pos["symbol"]))
         if df is not None and len(df) >= 60:
             a = score_symbol(df, mode)
             current = a["price"]
