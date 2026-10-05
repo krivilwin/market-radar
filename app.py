@@ -133,6 +133,12 @@ def save_portfolio(p):
 
 if "scan_offset" not in st.session_state:
     st.session_state.scan_offset = 0
+if "scan_results" not in st.session_state:
+    st.session_state.scan_results = {}
+if "scan_errors" not in st.session_state:
+    st.session_state.scan_errors = {}
+if "scan_universe_key" not in st.session_state:
+    st.session_state.scan_universe_key = ""
 
 st.title("📡 Market Radar V2")
 st.caption("Opportunity scanner + paper trading. Research tool only — signals are probabilistic, not guarantees.")
@@ -151,43 +157,93 @@ with tab1:
     default_symbols = ",".join(DEFAULT_UNIVERSE[universe_type])
     symbols_text = st.text_area("Symbols to scan", default_symbols, height=90)
     symbols = list(dict.fromkeys(s.strip().upper() for s in symbols_text.split(",") if s.strip()))
+
+    universe_key = f"{mode}|{universe_type}|" + ",".join(symbols)
+    if universe_key != st.session_state.scan_universe_key:
+        st.session_state.scan_universe_key = universe_key
+        st.session_state.scan_offset = 0
+        st.session_state.scan_results = {}
+        st.session_state.scan_errors = {}
+
     if symbols:
         total_batches = int(np.ceil(len(symbols)/MAX_SCAN))
         if st.session_state.scan_offset >= len(symbols):
             st.session_state.scan_offset = 0
         batch_no = st.session_state.scan_offset // MAX_SCAN + 1
+        batch = symbols[st.session_state.scan_offset:st.session_state.scan_offset+MAX_SCAN]
+        batch_done = all(symbol in st.session_state.scan_results for symbol in batch)
+        scanned_count = sum(symbol in st.session_state.scan_results for symbol in symbols)
+
         st.info(f"Free-plan protection: max {MAX_SCAN} tickers per scan. Batch {batch_no} of {total_batches}. Cached for 6 hours.")
+        st.caption(f"Current batch: {', '.join(batch)}")
+
         c1,c2 = st.columns(2)
         run_scan = c1.button("Run current batch", type="primary")
-        if c2.button("Next batch"):
-            st.session_state.scan_offset = (st.session_state.scan_offset + MAX_SCAN) % len(symbols)
+        next_label = f"Continue to Batch {batch_no + 1}" if batch_no < total_batches else "Back to Batch 1"
+        next_batch = c2.button(next_label)
+
+        if next_batch:
+            if batch_no < total_batches:
+                st.session_state.scan_offset += MAX_SCAN
+            else:
+                st.session_state.scan_offset = 0
             st.rerun()
+
         if run_scan:
-            batch = symbols[st.session_state.scan_offset:st.session_state.scan_offset+MAX_SCAN]
             st.write("Scanning: **" + ", ".join(batch) + "**")
-            rows, errors = [], []
+            errors = []
             bar = st.progress(0)
             for i,symbol in enumerate(batch):
                 df,err = history(symbol)
                 if df is not None and len(df) >= 60:
                     a = score_symbol(df, mode)
-                    rows.append({"Symbol":symbol,"Score":a["score"],"Signal":a["signal"],
-                                 "Price":round(a["price"],2),"RSI":round(a["rsi"],1),
-                                 "Entry low":round(a["entry_low"],2),"Entry high":round(a["entry_high"],2),
-                                 "Target":round(a["target"],2),"Stop":round(a["stop"],2),
-                                 "R/R":round(a["rr"],2)})
+                    st.session_state.scan_results[symbol] = {
+                        "Symbol":symbol,"Score":a["score"],"Signal":a["signal"],
+                        "Price":round(a["price"],2),"RSI":round(a["rsi"],1),
+                        "Entry low":round(a["entry_low"],2),"Entry high":round(a["entry_high"],2),
+                        "Target":round(a["target"],2),"Stop":round(a["stop"],2),
+                        "R/R":round(a["rr"],2)
+                    }
+                    st.session_state.scan_errors.pop(symbol, None)
                 elif err:
                     errors.append(f"{symbol}: {err}")
+                    st.session_state.scan_errors[symbol] = err
                 bar.progress((i+1)/max(1,len(batch)))
-            if rows:
-                out = pd.DataFrame(rows).sort_values(["Score","R/R"], ascending=False)
-                st.dataframe(out, use_container_width=True, hide_index=True)
-                good = out[out.Score >= 75]
-                if good.empty: st.warning("No high-quality setups found in this batch. Waiting is a valid signal.")
-                else: st.success(f"{len(good)} potential setup(s) scored 75 or higher.")
-            if errors:
-                st.warning(errors[0])
-                if len(errors)>1: st.caption(f"{len(errors)} ticker(s) could not be updated.")
+            batch_done = all(symbol in st.session_state.scan_results for symbol in batch)
+            scanned_count = sum(symbol in st.session_state.scan_results for symbol in symbols)
+
+        current_rows = [st.session_state.scan_results[s] for s in batch if s in st.session_state.scan_results]
+        if current_rows:
+            st.markdown(f"### Batch {batch_no} results")
+            current_out = pd.DataFrame(current_rows).sort_values(["Score","R/R"], ascending=False)
+            st.dataframe(current_out, use_container_width=True, hide_index=True)
+            good = current_out[current_out.Score >= 75]
+            if good.empty:
+                st.warning("No high-quality setups found in this batch. Waiting is a valid signal.")
+            else:
+                st.success(f"{len(good)} potential setup(s) scored 75 or higher in this batch.")
+
+        if batch_done:
+            if batch_no < total_batches:
+                st.success(f"✅ Batch {batch_no} scanned. {scanned_count}/{len(symbols)} tickers saved. Continue to Batch {batch_no + 1} when ready.")
+            else:
+                st.success(f"✅ Final batch scanned. {scanned_count}/{len(symbols)} tickers saved.")
+        else:
+            st.caption(f"👉 Batch {batch_no} ready — press Run current batch.")
+
+        all_rows = [st.session_state.scan_results[s] for s in symbols if s in st.session_state.scan_results]
+        if all_rows:
+            st.divider()
+            st.markdown(f"## 🏆 Overall ranking — {len(all_rows)}/{len(symbols)} scanned")
+            overall = pd.DataFrame(all_rows).sort_values(["Score","R/R"], ascending=False)
+            st.dataframe(overall, use_container_width=True, hide_index=True)
+            top = overall[overall.Score >= 75]
+            if not top.empty:
+                st.success(f"{len(top)} setup(s) currently score 75 or higher across all scanned batches.")
+
+        if st.session_state.scan_errors:
+            first_symbol = next(iter(st.session_state.scan_errors))
+            st.warning(f"{first_symbol}: {st.session_state.scan_errors[first_symbol]}")
     else:
         st.warning("Add at least one ticker.")
 
