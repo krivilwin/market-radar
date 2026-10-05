@@ -16,6 +16,11 @@ DEFAULT_UNIVERSE = {
 DATA_FILE = Path("paper_portfolio.json")
 MAX_SCAN = 6
 
+MY_PORTFOLIO = [
+    {"symbol": "ASYS", "shares": 5.8, "avg_price": 14.88, "currency": "USD"},
+    {"symbol": "VWRP", "shares": 0.47846889, "avg_price": 146.30, "currency": "GBP"},
+]
+
 def api_key():
     try:
         return st.secrets["TWELVE_DATA_API_KEY"]
@@ -133,12 +138,6 @@ def save_portfolio(p):
 
 if "scan_offset" not in st.session_state:
     st.session_state.scan_offset = 0
-if "scan_results" not in st.session_state:
-    st.session_state.scan_results = {}
-if "scan_errors" not in st.session_state:
-    st.session_state.scan_errors = {}
-if "scan_universe_key" not in st.session_state:
-    st.session_state.scan_universe_key = ""
 
 st.title("📡 Market Radar V2")
 st.caption("Opportunity scanner + paper trading. Research tool only — signals are probabilistic, not guarantees.")
@@ -149,7 +148,7 @@ if api_key(): st.sidebar.success("API key configured")
 else: st.sidebar.warning("Add TWELVE_DATA_API_KEY to Streamlit secrets.")
 st.sidebar.info("Free-plan mode: up to 6 tickers per scan. Data is cached for 6 hours.")
 
-tab1, tab2, tab3 = st.tabs(["🔥 Opportunities","🔎 Analyse","💷 Paper Portfolio"])
+tab1, tab2, tab3, tab4 = st.tabs(["🔥 Opportunities","🔎 Analyse","💼 My Portfolio","💷 Paper Portfolio"])
 
 with tab1:
     st.subheader(f"{mode} opportunities")
@@ -157,133 +156,43 @@ with tab1:
     default_symbols = ",".join(DEFAULT_UNIVERSE[universe_type])
     symbols_text = st.text_area("Symbols to scan", default_symbols, height=90)
     symbols = list(dict.fromkeys(s.strip().upper() for s in symbols_text.split(",") if s.strip()))
-
-    universe_key = f"{mode}|{universe_type}|" + ",".join(symbols)
-    if universe_key != st.session_state.scan_universe_key:
-        st.session_state.scan_universe_key = universe_key
-        st.session_state.scan_offset = 0
-        st.session_state.scan_results = {}
-        st.session_state.scan_errors = {}
-
     if symbols:
-        total_batches = int(np.ceil(len(symbols) / MAX_SCAN))
-
-        # Never move backwards automatically. Offset points to the next batch to scan.
-        st.session_state.scan_offset = max(
-            0, min(st.session_state.scan_offset, max(0, len(symbols) - 1))
-        )
-
-        scanned_count = sum(s in st.session_state.scan_results for s in symbols)
-
-        if scanned_count >= len(symbols):
-            st.success(f"✅ Scan complete — {scanned_count}/{len(symbols)} tickers scanned.")
-            if st.button("Start new scan"):
-                st.session_state.scan_offset = 0
-                st.session_state.scan_results = {}
-                st.session_state.scan_errors = {}
-                st.rerun()
-        else:
-            # Find the first not-yet-scanned ticker and start its batch there.
-            remaining_indices = [
-                i for i, s in enumerate(symbols)
-                if s not in st.session_state.scan_results
-            ]
-            if remaining_indices:
-                st.session_state.scan_offset = (remaining_indices[0] // MAX_SCAN) * MAX_SCAN
-
-            batch_no = st.session_state.scan_offset // MAX_SCAN + 1
-            batch = symbols[
-                st.session_state.scan_offset:
-                st.session_state.scan_offset + MAX_SCAN
-            ]
-
-            st.info(
-                f"Free-plan protection: max {MAX_SCAN} tickers per scan. "
-                f"Next: Batch {batch_no} of {total_batches}. Cached for 6 hours."
-            )
-            st.caption(f"Next batch: {', '.join(batch)}")
-            st.caption(f"Progress: {scanned_count}/{len(symbols)} scanned")
-
-            button_label = (
-                "Scan first batch" if scanned_count == 0
-                else f"Scan next batch ({batch_no}/{total_batches})"
-            )
-
-            if st.button(button_label, type="primary"):
-                st.write("Scanning: **" + ", ".join(batch) + "**")
-                bar = st.progress(0)
-                successful = 0
-
-                for i, symbol in enumerate(batch):
-                    df, err = history(symbol)
-                    if df is not None and len(df) >= 60:
-                        a = score_symbol(df, mode)
-                        st.session_state.scan_results[symbol] = {
-                            "Symbol": symbol,
-                            "Score": a["score"],
-                            "Signal": a["signal"],
-                            "Price": round(a["price"], 2),
-                            "RSI": round(a["rsi"], 1),
-                            "Entry low": round(a["entry_low"], 2),
-                            "Entry high": round(a["entry_high"], 2),
-                            "Target": round(a["target"], 2),
-                            "Stop": round(a["stop"], 2),
-                            "R/R": round(a["rr"], 2),
-                        }
-                        st.session_state.scan_errors.pop(symbol, None)
-                        successful += 1
-                    else:
-                        msg = err or "Not enough market history returned."
-                        st.session_state.scan_errors[symbol] = msg
-                    bar.progress((i + 1) / max(1, len(batch)))
-
-                # Advance only when every ticker in this batch succeeded.
-                batch_done = all(
-                    s in st.session_state.scan_results for s in batch
-                )
-                if batch_done:
-                    next_offset = st.session_state.scan_offset + MAX_SCAN
-                    st.session_state.scan_offset = min(
-                        next_offset, max(0, len(symbols) - 1)
-                    )
-                    st.session_state.scan_errors = {
-                        k: v for k, v in st.session_state.scan_errors.items()
-                        if k not in batch
-                    }
-                    st.rerun()
-                else:
-                    st.warning(
-                        f"{successful}/{len(batch)} tickers completed. "
-                        "The batch was not advanced so failed tickers can be retried."
-                    )
-
-        all_rows = [
-            st.session_state.scan_results[s]
-            for s in symbols
-            if s in st.session_state.scan_results
-        ]
-
-        if all_rows:
-            st.divider()
-            st.markdown(
-                f"## 🏆 Overall ranking — {len(all_rows)}/{len(symbols)} scanned"
-            )
-            overall = pd.DataFrame(all_rows).sort_values(
-                ["Score", "R/R"], ascending=False
-            )
-            st.dataframe(overall, use_container_width=True, hide_index=True)
-            top = overall[overall.Score >= 75]
-            if not top.empty:
-                st.success(
-                    f"{len(top)} setup(s) currently score 75 or higher "
-                    "across all scanned batches."
-                )
-
-        if st.session_state.scan_errors:
-            first_symbol = next(iter(st.session_state.scan_errors))
-            st.warning(
-                f"{first_symbol}: {st.session_state.scan_errors[first_symbol]}"
-            )
+        total_batches = int(np.ceil(len(symbols)/MAX_SCAN))
+        if st.session_state.scan_offset >= len(symbols):
+            st.session_state.scan_offset = 0
+        batch_no = st.session_state.scan_offset // MAX_SCAN + 1
+        st.info(f"Free-plan protection: max {MAX_SCAN} tickers per scan. Batch {batch_no} of {total_batches}. Cached for 6 hours.")
+        c1,c2 = st.columns(2)
+        run_scan = c1.button("Run current batch", type="primary")
+        if c2.button("Next batch"):
+            st.session_state.scan_offset = (st.session_state.scan_offset + MAX_SCAN) % len(symbols)
+            st.rerun()
+        if run_scan:
+            batch = symbols[st.session_state.scan_offset:st.session_state.scan_offset+MAX_SCAN]
+            st.write("Scanning: **" + ", ".join(batch) + "**")
+            rows, errors = [], []
+            bar = st.progress(0)
+            for i,symbol in enumerate(batch):
+                df,err = history(symbol)
+                if df is not None and len(df) >= 60:
+                    a = score_symbol(df, mode)
+                    rows.append({"Symbol":symbol,"Score":a["score"],"Signal":a["signal"],
+                                 "Price":round(a["price"],2),"RSI":round(a["rsi"],1),
+                                 "Entry low":round(a["entry_low"],2),"Entry high":round(a["entry_high"],2),
+                                 "Target":round(a["target"],2),"Stop":round(a["stop"],2),
+                                 "R/R":round(a["rr"],2)})
+                elif err:
+                    errors.append(f"{symbol}: {err}")
+                bar.progress((i+1)/max(1,len(batch)))
+            if rows:
+                out = pd.DataFrame(rows).sort_values(["Score","R/R"], ascending=False)
+                st.dataframe(out, use_container_width=True, hide_index=True)
+                good = out[out.Score >= 75]
+                if good.empty: st.warning("No high-quality setups found in this batch. Waiting is a valid signal.")
+                else: st.success(f"{len(good)} potential setup(s) scored 75 or higher.")
+            if errors:
+                st.warning(errors[0])
+                if len(errors)>1: st.caption(f"{len(errors)} ticker(s) could not be updated.")
     else:
         st.warning("Add at least one ticker.")
 
@@ -312,6 +221,70 @@ with tab2:
             st.plotly_chart(fig,use_container_width=True)
 
 with tab3:
+    st.subheader("💼 My Portfolio")
+    st.caption("Your real positions. Market prices/signals use Twelve Data and may be delayed/cached for up to 6 hours.")
+
+    portfolio_rows = []
+    for pos in MY_PORTFOLIO:
+        df, err = history(pos["symbol"])
+        if df is not None and len(df) >= 60:
+            a = score_symbol(df, mode)
+            current = a["price"]
+            avg = pos["avg_price"]
+            pnl_pct = ((current / avg) - 1) * 100 if avg else np.nan
+
+            if a["score"] >= 75:
+                action = "🟢 HOLD / STRONG"
+            elif a["score"] >= 65:
+                action = "🟡 HOLD / WATCH"
+            elif a["score"] >= 50:
+                action = "⚪ WATCH CLOSELY"
+            else:
+                action = "🔴 REVIEW POSITION"
+
+            portfolio_rows.append({
+                "Symbol": pos["symbol"],
+                "Shares": pos["shares"],
+                "Avg price": round(avg, 2),
+                "Current": round(current, 2),
+                "Return %": round(pnl_pct, 2),
+                "Score": a["score"],
+                "Signal": a["signal"],
+                "RSI": round(a["rsi"], 1),
+                "Action": action,
+                "Currency": pos["currency"],
+            })
+        else:
+            portfolio_rows.append({
+                "Symbol": pos["symbol"],
+                "Shares": pos["shares"],
+                "Avg price": pos["avg_price"],
+                "Current": np.nan,
+                "Return %": np.nan,
+                "Score": np.nan,
+                "Signal": err or "No data",
+                "RSI": np.nan,
+                "Action": "⚪ DATA UNAVAILABLE",
+                "Currency": pos["currency"],
+            })
+
+    if portfolio_rows:
+        pf = pd.DataFrame(portfolio_rows)
+        st.dataframe(pf, use_container_width=True, hide_index=True)
+
+        for row in portfolio_rows:
+            st.markdown(f"### {row['Symbol']} — {row['Action']}")
+            c1, c2, c3 = st.columns(3)
+            symbol_prefix = "$" if row["Currency"] == "USD" else "£"
+            c1.metric("Current", f"{symbol_prefix}{row['Current']:.2f}" if pd.notna(row["Current"]) else "N/A")
+            c2.metric("Return", f"{row['Return %']:+.2f}%" if pd.notna(row["Return %"]) else "N/A")
+            c3.metric("Radar score", f"{int(row['Score'])}/100" if pd.notna(row["Score"]) else "N/A")
+            st.caption(f"Average price: {symbol_prefix}{row['Avg price']:.2f} • Shares: {row['Shares']} • {row['Signal']}")
+            st.divider()
+
+    st.info("ASYS is tracked in USD and VWRP in GBP. Return % is currency-local and does not include FX effects, fees or taxes.")
+
+with tab4:
     p = load_portfolio()
     c1,c2 = st.columns(2)
     c1.metric("Paper cash",f"£{p['cash']:,.2f}")
